@@ -1,28 +1,42 @@
-name: Test Direct X Access
+name: Inspect Kavian X Page
 
 on:
   workflow_dispatch:
 
 jobs:
-  test:
+  inspect:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test X public profile
+      - name: Download Kavian X profile
         run: |
-          echo "Testing direct access to @KavianCoin..."
-          echo ""
-
           curl -L \
             --max-time 30 \
-            -A "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1" \
+            -A "Mozilla/5.0" \
             -o kavian.html \
-            -w "HTTP STATUS: %{http_code}\n" \
             "https://x.com/KavianCoin"
 
+      - name: Look for post data
+        run: |
+          echo "=== POST/TWEET DATA ==="
+
+          grep -oE 'https://x\.com/KavianCoin/status/[0-9]+' kavian.html \
+            | sort -u \
+            | head -20
+
           echo ""
-          echo "========== X RESPONSE =========="
+          echo "=== KAVIAN STATUS IDS ==="
+
+          grep -oE 'KavianCoin/status/[0-9]+' kavian.html \
+            | sort -u \
+            | head -20
+
+          echo ""
+          echo "=== DATA COUNTS ==="
+
+          echo "status links:"
+          grep -oE 'KavianCoin/status/[0-9]+' kavian.html \
+            | wc -l
+
+          echo "bytes:"
           wc -c kavian.html
-          head -c 2000 kavian.html
-          echo ""
-          echo "========== END =========="
