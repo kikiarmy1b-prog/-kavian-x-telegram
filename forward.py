@@ -26,45 +26,43 @@ HEADERS = {
 }
 
 
-# ============================================================
-# STATE
-# ============================================================
-
 def load_state():
-
     if not STATE_FILE.exists():
         return {
             "initialized": False,
-            "last_id": None
+            "sent_ids": []
         }
 
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            state = json.load(f)
+
+        # Convert old state format if necessary
+        if "sent_ids" not in state:
+            old_id = state.get("last_id")
+            state["sent_ids"] = [old_id] if old_id else []
+
+        return state
 
     except Exception:
         return {
             "initialized": False,
-            "last_id": None
+            "sent_ids": []
         }
 
 
 def save_state(state):
+    # Keep only the most recent 100 IDs
+    state["sent_ids"] = state.get("sent_ids", [])[-100:]
 
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
 
 
-# ============================================================
-# DOWNLOAD X PROFILE
-# ============================================================
-
 def download_profile():
-
     print("")
     print("Downloading:")
     print(X_URL)
-    print("")
 
     response = requests.get(
         X_URL,
@@ -83,25 +81,18 @@ def download_profile():
     return response.text
 
 
-# ============================================================
-# HTML CLEANING
-# ============================================================
-
 def clean_text(value):
-
     if not value:
         return ""
 
     value = html.unescape(value)
 
-    # Remove HTML
     value = re.sub(
         r"<[^>]+>",
         "",
         value
     )
 
-    # Normalize whitespace
     value = re.sub(
         r"\s+",
         " ",
@@ -111,19 +102,8 @@ def clean_text(value):
     return value.strip()
 
 
-# ============================================================
-# EXTRACT TWEETS
-# ============================================================
-
 def extract_posts(page):
-
     posts = []
-
-    # X currently renders tweets as:
-    #
-    # <article ... data-tweet-id="123">
-    #
-    # We capture each article separately.
 
     articles = re.findall(
         r'<article\b[^>]*data-tweet-id="(\d+)"[^>]*>(.*?)</article>',
@@ -135,10 +115,6 @@ def extract_posts(page):
     print("Tweet articles found:", len(articles))
 
     for tweet_id, article in articles:
-
-        # ----------------------------------------------------
-        # Date
-        # ----------------------------------------------------
 
         date_match = re.search(
             r'itemProp="datePublished"\s+content="([^"]+)"',
@@ -152,37 +128,21 @@ def extract_posts(page):
             else ""
         )
 
-        # ----------------------------------------------------
-        # URL
-        # ----------------------------------------------------
-
         url_match = re.search(
-            r'itemProp="url"\s+content="https://x\.com/[^"]+/status/\d+"',
+            r'https://x\.com/[^"]+/status/\d+',
             article,
             flags=re.IGNORECASE
         )
 
-        if url_match:
-
-            url = re.search(
-                r'https://x\.com/[^"]+/status/\d+',
-                url_match.group(0)
-            ).group(0)
-
-        else:
-
-            url = (
-                f"https://x.com/{USERNAME}/status/"
-                f"{tweet_id}"
-            )
-
-        # ----------------------------------------------------
-        # Tweet text
-        # ----------------------------------------------------
+        url = (
+            url_match.group(0)
+            if url_match
+            else f"https://x.com/{USERNAME}/status/{tweet_id}"
+        )
 
         text = ""
 
-        # Schema.org articleBody is preferred.
+        # Look for articleBody content
         body_match = re.search(
             r'itemProp="articleBody"[^>]*>(.*?)</div>',
             article,
@@ -194,9 +154,8 @@ def extract_posts(page):
                 body_match.group(1)
             )
 
-        # Try meta content if articleBody wasn't found.
+        # Alternative format
         if not text:
-
             body_match = re.search(
                 r'itemProp="articleBody"\s+content="([^"]*)"',
                 article,
@@ -208,35 +167,21 @@ def extract_posts(page):
                     body_match.group(1)
                 )
 
-        # ----------------------------------------------------
-        # Detect replies
-        # ----------------------------------------------------
+        is_reply = bool(
+            re.search(
+                r"Replying to",
+                article,
+                flags=re.IGNORECASE
+            )
+        )
 
-        is_reply = False
-
-        if re.search(
-            r'Replying to',
-            article,
-            flags=re.IGNORECASE
-        ):
-            is_reply = True
-
-        # ----------------------------------------------------
-        # Detect retweets
-        # ----------------------------------------------------
-
-        is_retweet = False
-
-        if re.search(
-            r'Reposted by|Retweeted by|reposted',
-            article,
-            flags=re.IGNORECASE
-        ):
-            is_retweet = True
-
-        # ----------------------------------------------------
-        # Save
-        # ----------------------------------------------------
+        is_retweet = bool(
+            re.search(
+                r"Reposted by|Retweeted by",
+                article,
+                flags=re.IGNORECASE
+            )
+        )
 
         posts.append({
             "id": tweet_id,
@@ -250,14 +195,9 @@ def extract_posts(page):
     return posts
 
 
-# ============================================================
-# SORT POSTS
-# ============================================================
-
 def sort_posts(posts):
 
     def sort_key(post):
-
         try:
             return datetime.fromisoformat(
                 post["published"].replace(
@@ -265,10 +205,7 @@ def sort_posts(posts):
                     "+00:00"
                 )
             )
-
         except Exception:
-
-            # Snowflake IDs generally increase with time.
             return int(post["id"])
 
     return sorted(
@@ -276,10 +213,6 @@ def sort_posts(posts):
         key=sort_key
     )
 
-
-# ============================================================
-# TELEGRAM
-# ============================================================
 
 def send_telegram(post):
 
@@ -304,13 +237,13 @@ def send_telegram(post):
         f"🔗 {post['url']}"
     )
 
-    telegram_url = (
+    url = (
         f"https://api.telegram.org/"
         f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
     response = requests.post(
-        telegram_url,
+        url,
         json={
             "chat_id": TELEGRAM_CHAT_ID,
             "text": message,
@@ -320,10 +253,8 @@ def send_telegram(post):
     )
 
     if response.status_code != 200:
-
         raise RuntimeError(
-            "Telegram error: "
-            f"{response.status_code} "
+            f"Telegram error {response.status_code}: "
             f"{response.text}"
         )
 
@@ -333,178 +264,138 @@ def send_telegram(post):
     )
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
 def main():
 
     print("")
     print("==========================================")
-    print("KAVIAN X → TELEGRAM")
+    print("KAVIAN X -> TELEGRAM")
     print("==========================================")
-    print("")
-    print(
-        f"Monitoring @{USERNAME}"
-    )
 
     state = load_state()
+
+    sent_ids = set(
+        state.get("sent_ids", [])
+    )
+
+    print("")
+    print(
+        "Previously sent IDs:",
+        len(sent_ids)
+    )
 
     page = download_profile()
 
     posts = extract_posts(page)
 
     if not posts:
-
         raise RuntimeError(
             "No tweet articles found."
         )
-
-    # --------------------------------------------------------
-    # Remove duplicates
-    # --------------------------------------------------------
 
     unique = {}
 
     for post in posts:
         unique[post["id"]] = post
 
-    posts = list(
-        unique.values()
+    posts = sort_posts(
+        list(unique.values())
     )
-
-    # --------------------------------------------------------
-    # Sort oldest → newest
-    # --------------------------------------------------------
-
-    posts = sort_posts(posts)
 
     print("")
     print(
-        "Unique posts:",
+        "Unique posts found:",
         len(posts)
     )
-
-    for post in posts:
-
-        print(
-            post["id"],
-            post["published"],
-            post["url"]
-        )
-
-    newest = posts[-1]
 
     # --------------------------------------------------------
     # FIRST RUN
     #
-    # Don't send existing posts.
-    # Save newest as baseline.
+    # Save ALL currently visible posts as already seen.
+    # This prevents old posts from being forwarded.
     # --------------------------------------------------------
 
     if not state.get("initialized"):
 
-        state = {
-            "initialized": True,
-            "last_id": newest["id"]
-        }
+        state["initialized"] = True
+
+        state["sent_ids"] = [
+            post["id"]
+            for post in posts
+        ]
 
         save_state(state)
 
         print("")
         print("FIRST RUN")
         print(
-            "Baseline saved:",
-            newest["id"]
+            "Saved",
+            len(posts),
+            "existing posts as baseline."
         )
 
         print(
-            "No Telegram message sent."
+            "Nothing sent to Telegram."
         )
 
         return
 
-    last_id = state.get(
-        "last_id"
-    )
-
     # --------------------------------------------------------
-    # Find last known post
+    # Find posts we have never sent
     # --------------------------------------------------------
 
-    last_index = None
+    new_posts = []
 
-    for index, post in enumerate(posts):
+    for post in posts:
 
-        if post["id"] == last_id:
+        if post["id"] in sent_ids:
+            continue
 
-            last_index = index
+        # Ignore replies
+        if post["is_reply"]:
+            print(
+                "Ignoring reply:",
+                post["id"]
+            )
+            sent_ids.add(post["id"])
+            continue
 
-            break
+        # Ignore retweets
+        if post["is_retweet"]:
+            print(
+                "Ignoring repost:",
+                post["id"]
+            )
+            sent_ids.add(post["id"])
+            continue
+
+        new_posts.append(post)
 
     # --------------------------------------------------------
-    # Safety mode
-    #
-    # If X no longer shows the old post,
-    # don't send everything.
+    # No new posts
     # --------------------------------------------------------
 
-    if last_index is None:
+    if not new_posts:
 
         print("")
         print(
-            "Previous post not found "
-            "in current X page."
+            "No new KAVIAN posts."
         )
 
-        print(
-            "SAFETY MODE:"
-            " updating baseline only."
-        )
-
-        state["last_id"] = newest["id"]
+        state["sent_ids"] = list(sent_ids)
 
         save_state(state)
 
         return
 
     # --------------------------------------------------------
-    # New posts
+    # Send new posts oldest -> newest
     # --------------------------------------------------------
-
-    new_posts = posts[
-        last_index + 1:
-    ]
-
-    # --------------------------------------------------------
-    # Filter replies and retweets
-    # --------------------------------------------------------
-
-    new_posts = [
-        post
-        for post in new_posts
-        if not post["is_reply"]
-        and not post["is_retweet"]
-    ]
-
-    if not new_posts:
-
-        print("")
-        print(
-            "No new original KAVIAN posts."
-        )
-
-        return
 
     print("")
     print(
-        "NEW ORIGINAL POSTS:",
+        "NEW POSTS FOUND:",
         len(new_posts)
     )
-
-    # --------------------------------------------------------
-    # Send oldest → newest
-    # --------------------------------------------------------
 
     for post in new_posts:
 
@@ -516,11 +407,17 @@ def main():
 
         send_telegram(post)
 
+        sent_ids.add(
+            post["id"]
+        )
+
     # --------------------------------------------------------
-    # Save newest post
+    # Save state ONLY after successful sends
     # --------------------------------------------------------
 
-    state["last_id"] = new_posts[-1]["id"]
+    state["sent_ids"] = list(
+        sent_ids
+    )
 
     save_state(state)
 
