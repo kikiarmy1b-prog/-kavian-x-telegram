@@ -1,31 +1,30 @@
-name: Kavian X to Telegram
+name: Test Kavian Feed
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
-  forward:
+  test:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
+      - name: Test RSSHub instance
         run: |
-          pip install requests feedparser
+          URL="https://rsshub.isrss.com/twitter/user/KavianCoin"
 
-      - name: Run Kavian forwarder
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RSS_URL: ${{ secrets.RSS_URL }}
-        run: |
-          python forward.py
+          echo "Testing:"
+          echo "$URL"
+          echo ""
+
+          curl -L \
+            --max-time 30 \
+            -A "Mozilla/5.0" \
+            -o response.txt \
+            -w "HTTP STATUS: %{http_code}\n" \
+            "$URL"
+
+          echo ""
+          echo "========== RESPONSE =========="
+          head -c 3000 response.txt
+          echo ""
+          echo "========== END RESPONSE =========="
