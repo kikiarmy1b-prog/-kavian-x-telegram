@@ -4,7 +4,15 @@ import subprocess
 import feedparser
 import requests
 
-RSS_URL = "https://xcancel.com/KavianCoin/rss"
+# ============================================================
+# KAVIAN X -> TELEGRAM FORWARDER
+# ============================================================
+
+RSS_URL = (
+    "https://rsshub.app/twitter/user/KavianCoin/"
+    "excludeReplies=1&includeRts=0&forceWebApi=1"
+)
+
 STATE_FILE = "last_post.json"
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -12,6 +20,10 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 TELEGRAM_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
+
+# ============================================================
+# STATE
+# ============================================================
 
 def get_last_id():
     if not os.path.exists(STATE_FILE):
@@ -30,8 +42,13 @@ def save_last_id(post_id):
         json.dump({"last_id": post_id}, f)
 
 
+# ============================================================
+# RSS
+# ============================================================
+
 def get_posts():
-    print("Checking Kavian RSS feed...")
+    print("Checking Kavian X feed...")
+    print(RSS_URL)
 
     feed = feedparser.parse(RSS_URL)
 
@@ -43,6 +60,7 @@ def get_posts():
     posts = []
 
     for entry in feed.entries:
+
         post_id = (
             entry.get("id")
             or entry.get("guid")
@@ -53,19 +71,32 @@ def get_posts():
 
         title = entry.get("title", "").strip()
 
+        description = entry.get("description", "").strip()
+
+        # RSSHub normally puts the tweet text in title/description.
+        text = title
+
+        if not text and description:
+            text = description
+
         if not post_id or not link:
             continue
 
         posts.append({
             "id": post_id,
-            "text": title,
+            "text": text,
             "link": link
         })
 
     return posts
 
 
+# ============================================================
+# TELEGRAM
+# ============================================================
+
 def send_to_telegram(post):
+
     text = post["text"]
 
     if not text:
@@ -87,22 +118,38 @@ def send_to_telegram(post):
         timeout=30
     )
 
+    if not response.ok:
+        print("Telegram response:")
+        print(response.text)
+
     response.raise_for_status()
 
     result = response.json()
 
     if not result.get("ok"):
         raise RuntimeError(
-            f"Telegram error: {result}"
+            f"Telegram API error: {result}"
         )
 
-    print(f"Sent to Telegram: {post['link']}")
+    print("Successfully sent to Telegram.")
+    print(post["link"])
 
 
-def save_state_and_push():
+# ============================================================
+# SAVE STATE TO GITHUB
+# ============================================================
+
+def save_state_to_github():
+
     try:
+
         subprocess.run(
-            ["git", "config", "user.name", "github-actions[bot]"],
+            [
+                "git",
+                "config",
+                "user.name",
+                "github-actions[bot]"
+            ],
             check=True
         )
 
@@ -111,7 +158,8 @@ def save_state_and_push():
                 "git",
                 "config",
                 "user.email",
-                "41898282+github-actions[bot]@users.noreply.github.com"
+                "41898282+github-actions[bot]"
+                "@users.noreply.github.com"
             ],
             check=True
         )
@@ -132,57 +180,69 @@ def save_state_and_push():
             text=True
         )
 
-        if result.returncode == 0:
-            subprocess.run(
-                ["git", "push"],
-                check=True
-            )
-
-            print("Saved forwarding state.")
-
-        else:
+        if result.returncode != 0:
             print("No state changes to commit.")
+            return
+
+        subprocess.run(
+            ["git", "push"],
+            check=True
+        )
+
+        print("Forwarding state saved.")
 
     except Exception as e:
-        print(f"Warning: Could not save state to GitHub: {e}")
+        print(f"Warning: could not save state: {e}")
 
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
+
     posts = get_posts()
 
     if not posts:
-        print("No posts found in RSS feed.")
+        print("No posts found.")
         return
 
-    print(f"Found {len(posts)} RSS post(s).")
+    print(f"Found {len(posts)} post(s).")
 
     # RSS feeds normally return newest first.
-    # Reverse so we process old -> new.
+    # Reverse so oldest -> newest.
     posts.reverse()
 
     last_id = get_last_id()
 
-    # First run:
-    # Send only the newest post so we don't flood Telegram
-    # with old posts.
+    # --------------------------------------------------------
+    # FIRST RUN
+    # --------------------------------------------------------
+
     if last_id is None:
+
         newest = posts[-1]
 
         print("First run detected.")
-        print(f"Sending newest post: {newest['link']}")
+        print(f"Sending newest post:")
+        print(newest["link"])
 
         send_to_telegram(newest)
 
         save_last_id(newest["id"])
-        save_state_and_push()
+        save_state_to_github()
 
         return
 
-    # Find posts after the last forwarded post.
-    new_posts = []
+    # --------------------------------------------------------
+    # FIND NEW POSTS
+    # --------------------------------------------------------
+
     found_last = False
+    new_posts = []
 
     for post in posts:
+
         if post["id"] == last_id:
             found_last = True
             continue
@@ -190,39 +250,65 @@ def main():
         if found_last:
             new_posts.append(post)
 
-    # If the previous post is no longer in the RSS feed,
-    # don't send the entire feed again.
+    # --------------------------------------------------------
+    # OLD POST NO LONGER IN FEED
+    # --------------------------------------------------------
+
     if not found_last:
+
         newest = posts[-1]
 
         if newest["id"] != last_id:
-            print("Previous post is no longer in RSS.")
-            print(f"Sending newest post: {newest['link']}")
+
+            print(
+                "Previous post is no longer in the feed."
+            )
+
+            print(
+                f"Sending newest post: {newest['link']}"
+            )
 
             send_to_telegram(newest)
 
             save_last_id(newest["id"])
-            save_state_and_push()
+            save_state_to_github()
+
         else:
+
             print("No new post.")
 
         return
 
+    # --------------------------------------------------------
+    # NO NEW POSTS
+    # --------------------------------------------------------
+
     if not new_posts:
+
         print("No new Kavian posts.")
         return
 
-    print(f"Found {len(new_posts)} new post(s).")
+    # --------------------------------------------------------
+    # SEND NEW POSTS
+    # --------------------------------------------------------
+
+    print(
+        f"Found {len(new_posts)} new post(s)."
+    )
 
     for post in new_posts:
+
         send_to_telegram(post)
 
-    # Save the newest forwarded post.
+    # Save newest forwarded post.
     save_last_id(new_posts[-1]["id"])
 
-    # Persist the state in the GitHub repository.
-    save_state_and_push()
+    save_state_to_github()
 
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
     main()
