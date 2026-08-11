@@ -1,46 +1,47 @@
-name: Inspect Kavian Posts
+name: KAVIAN X Forwarder
 
 on:
   workflow_dispatch:
 
+  schedule:
+    - cron: "*/10 * * * *"
+
 jobs:
-  inspect:
+  forward:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write
+
     steps:
-      - name: Download Kavian X profile
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install requests
         run: |
-          curl -L \
-            --max-time 30 \
-            -A "Mozilla/5.0" \
-            -o kavian.html \
-            "https://x.com/KavianCoin"
+          pip install requests
 
-      - name: Extract X post information
+      - name: Run forwarder
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "=========================================="
-          echo "KAVIAN X POST REFERENCES"
-          echo "=========================================="
+          python forward.py
 
-          strings kavian.html \
-            | grep -oE 'https://x\.com/KavianCoin/status/[0-9]+' \
-            | sort -u
+      - name: Save state
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          echo ""
-          echo "=========================================="
-          echo "TIMELINE DATA AROUND STATUS IDs"
-          echo "=========================================="
+          git add kavian_state.json
 
-          strings kavian.html \
-            | grep -oE '.{0,150}KavianCoin/status/[0-9]+.{0,300}' \
-            | head -20
+          git diff --cached --quiet || git commit -m "Update KAVIAN state"
 
-          echo ""
-          echo "=========================================="
-          echo "TOTAL UNIQUE STATUS LINKS"
-          echo "=========================================="
-
-          strings kavian.html \
-            | grep -oE 'KavianCoin/status/[0-9]+' \
-            | sort -u \
-            | wc -l
+          git push
