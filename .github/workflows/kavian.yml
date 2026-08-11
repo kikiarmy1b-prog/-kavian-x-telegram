@@ -1,22 +1,31 @@
-name: Test X Feed
+name: Kavian X to Telegram
 
 on:
+  schedule:
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
-  test:
+  forward:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test x2rss connection
-        run: |
-          echo "Testing x2rss..."
-          curl -L --max-time 30 -A "Mozilla/5.0" \
-            -o feed.xml \
-            -w "HTTP STATUS: %{http_code}\n" \
-            "https://rss.gurify.com/KavianCoin/rss"
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-          echo "----- RESPONSE -----"
-          head -c 2000 feed.xml
-          echo
-          echo "----- END -----"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install requests feedparser
+
+      - name: Run Kavian forwarder
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RSS_URL: ${{ secrets.RSS_URL }}
+        run: |
+          python forward.py
