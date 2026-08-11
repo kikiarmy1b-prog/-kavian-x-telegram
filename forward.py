@@ -1,46 +1,28 @@
 import os
 import re
 import json
-import time
 import html
-import hashlib
 import requests
-import xml.etree.ElementTree as ET
 from pathlib import Path
+from datetime import datetime
 
-# ============================================================
-# KAVIAN X -> TELEGRAM
-# No X API
-# No RSSHub
-# New posts only
-# ============================================================
+USERNAME = "KavianCoin"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-USERNAME = "KavianCoin"
-
-# Public Nitter-style RSS sources.
-# We try them in order.
-RSS_SOURCES = [
-    f"https://nitter.miningtcup.me/{USERNAME}/rss",
-    f"https://nitter.poast.org/{USERNAME}/rss",
-    f"https://nt.vern.cc/{USERNAME}/rss",
-    f"https://xcancel.com/{USERNAME}/rss",
-]
-
 STATE_FILE = Path("kavian_state.json")
+
+X_URL = f"https://x.com/{USERNAME}"
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0 Safari/537.36"
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) "
+        "Version/18.0 Mobile/15E148 Safari/604.1"
     ),
-    "Accept": (
-        "application/rss+xml, application/atom+xml, "
-        "application/xml, text/xml, text/html, */*"
-    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
 
@@ -49,73 +31,60 @@ HEADERS = {
 # ============================================================
 
 def load_state():
+
     if not STATE_FILE.exists():
         return {
             "initialized": False,
-            "last_id": None,
-            "last_link": None
+            "last_id": None
         }
 
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
+
     except Exception:
         return {
             "initialized": False,
-            "last_id": None,
-            "last_link": None
+            "last_id": None
         }
 
 
 def save_state(state):
+
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
 
 
 # ============================================================
-# TELEGRAM
+# DOWNLOAD X PROFILE
 # ============================================================
 
-def send_to_telegram(text):
+def download_profile():
 
-    if not TELEGRAM_BOT_TOKEN:
-        raise RuntimeError(
-            "Missing secret: TELEGRAM_BOT_TOKEN"
-        )
+    print("")
+    print("Downloading:")
+    print(X_URL)
+    print("")
 
-    if not TELEGRAM_CHAT_ID:
-        raise RuntimeError(
-            "Missing secret: TELEGRAM_CHAT_ID"
-        )
-
-    url = (
-        f"https://api.telegram.org/"
-        f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    )
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "disable_web_page_preview": False
-    }
-
-    response = requests.post(
-        url,
-        json=payload,
+    response = requests.get(
+        X_URL,
+        headers=HEADERS,
         timeout=30
     )
 
+    print("HTTP status:", response.status_code)
+    print("Downloaded:", len(response.content), "bytes")
+
     if response.status_code != 200:
         raise RuntimeError(
-            f"Telegram error {response.status_code}: "
-            f"{response.text}"
+            f"X returned HTTP {response.status_code}"
         )
 
-    print("Telegram message sent successfully.")
+    return response.text
 
 
 # ============================================================
-# CLEAN TEXT
+# HTML CLEANING
 # ============================================================
 
 def clean_text(value):
@@ -125,9 +94,9 @@ def clean_text(value):
 
     value = html.unescape(value)
 
-    # Remove HTML tags
+    # Remove HTML
     value = re.sub(
-        r"<[^>]*>",
+        r"<[^>]+>",
         "",
         value
     )
@@ -143,268 +112,224 @@ def clean_text(value):
 
 
 # ============================================================
-# EXTRACT RSS ITEMS WITH REGEX
-#
-# This is deliberately more tolerant than XML parsing.
-# Some public Nitter instances return imperfect XML.
+# EXTRACT TWEETS
 # ============================================================
 
-def parse_feed_lenient(xml_text):
+def extract_posts(page):
 
     posts = []
 
-    # --------------------------------------------------------
-    # First try normal XML.
-    # --------------------------------------------------------
+    # X currently renders tweets as:
+    #
+    # <article ... data-tweet-id="123">
+    #
+    # We capture each article separately.
 
-    try:
-
-        root = ET.fromstring(xml_text)
-
-        for item in root.findall(".//item"):
-
-            title = ""
-            link = ""
-            guid = ""
-            description = ""
-
-            title_node = item.find("title")
-            if title_node is not None and title_node.text:
-                title = title_node.text
-
-            link_node = item.find("link")
-            if link_node is not None and link_node.text:
-                link = link_node.text
-
-            guid_node = item.find("guid")
-            if guid_node is not None and guid_node.text:
-                guid = guid_node.text
-
-            desc_node = item.find("description")
-            if desc_node is not None:
-                description = "".join(
-                    desc_node.itertext()
-                )
-
-            post_id = (
-                guid.strip()
-                if guid
-                else link.strip()
-            )
-
-            if not post_id:
-                post_id = hashlib.sha256(
-                    (
-                        title +
-                        description
-                    ).encode("utf-8")
-                ).hexdigest()
-
-            posts.append({
-                "id": post_id,
-                "title": clean_text(title),
-                "link": link.strip(),
-                "description": clean_text(description)
-            })
-
-        if posts:
-            print(
-                f"Normal XML parser found "
-                f"{len(posts)} post(s)."
-            )
-
-            return posts
-
-    except ET.ParseError as e:
-
-        print(
-            "Normal XML parser failed."
-        )
-
-        print(
-            f"XML error: {e}"
-        )
-
-        print(
-            "Trying tolerant parser..."
-        )
-
-    # --------------------------------------------------------
-    # TOLERANT REGEX PARSER
-    # --------------------------------------------------------
-
-    item_matches = re.findall(
-        r"<item\b[^>]*>(.*?)</item\s*>",
-        xml_text,
+    articles = re.findall(
+        r'<article\b[^>]*data-tweet-id="(\d+)"[^>]*>(.*?)</article>',
+        page,
         flags=re.IGNORECASE | re.DOTALL
     )
 
-    print(
-        f"Tolerant parser found "
-        f"{len(item_matches)} item block(s)."
-    )
+    print("")
+    print("Tweet articles found:", len(articles))
 
-    for item in item_matches:
+    for tweet_id, article in articles:
 
-        def extract_tag(tag):
+        # ----------------------------------------------------
+        # Date
+        # ----------------------------------------------------
 
-            match = re.search(
-                rf"<{tag}\b[^>]*>(.*?)</{tag}\s*>",
-                item,
-                flags=re.IGNORECASE | re.DOTALL
+        date_match = re.search(
+            r'itemProp="datePublished"\s+content="([^"]+)"',
+            article,
+            flags=re.IGNORECASE
+        )
+
+        published = (
+            date_match.group(1)
+            if date_match
+            else ""
+        )
+
+        # ----------------------------------------------------
+        # URL
+        # ----------------------------------------------------
+
+        url_match = re.search(
+            r'itemProp="url"\s+content="https://x\.com/[^"]+/status/\d+"',
+            article,
+            flags=re.IGNORECASE
+        )
+
+        if url_match:
+
+            url = re.search(
+                r'https://x\.com/[^"]+/status/\d+',
+                url_match.group(0)
+            ).group(0)
+
+        else:
+
+            url = (
+                f"https://x.com/{USERNAME}/status/"
+                f"{tweet_id}"
             )
 
-            if not match:
-                return ""
+        # ----------------------------------------------------
+        # Tweet text
+        # ----------------------------------------------------
 
-            return match.group(1).strip()
+        text = ""
 
-        title = extract_tag("title")
-
-        link = extract_tag("link")
-
-        guid = extract_tag("guid")
-
-        description = extract_tag(
-            "description"
+        # Schema.org articleBody is preferred.
+        body_match = re.search(
+            r'itemProp="articleBody"[^>]*>(.*?)</div>',
+            article,
+            flags=re.IGNORECASE | re.DOTALL
         )
 
-        # Sometimes the link is wrapped in CDATA
-        link = re.sub(
-            r"<!\[CDATA\[(.*?)\]\]>",
-            r"\1",
-            link,
-            flags=re.DOTALL
-        )
+        if body_match:
+            text = clean_text(
+                body_match.group(1)
+            )
 
-        title = re.sub(
-            r"<!\[CDATA\[(.*?)\]\]>",
-            r"\1",
-            title,
-            flags=re.DOTALL
-        )
+        # Try meta content if articleBody wasn't found.
+        if not text:
 
-        description = re.sub(
-            r"<!\[CDATA\[(.*?)\]\]>",
-            r"\1",
-            description,
-            flags=re.DOTALL
-        )
+            body_match = re.search(
+                r'itemProp="articleBody"\s+content="([^"]*)"',
+                article,
+                flags=re.IGNORECASE
+            )
 
-        link = html.unescape(link).strip()
+            if body_match:
+                text = clean_text(
+                    body_match.group(1)
+                )
 
-        title = clean_text(title)
+        # ----------------------------------------------------
+        # Detect replies
+        # ----------------------------------------------------
 
-        description = clean_text(
-            description
-        )
+        is_reply = False
 
-        guid = clean_text(guid)
+        if re.search(
+            r'Replying to',
+            article,
+            flags=re.IGNORECASE
+        ):
+            is_reply = True
 
-        post_id = (
-            guid
-            or link
-        )
+        # ----------------------------------------------------
+        # Detect retweets
+        # ----------------------------------------------------
 
-        if not post_id:
-            post_id = hashlib.sha256(
-                (
-                    title +
-                    description
-                ).encode("utf-8")
-            ).hexdigest()
+        is_retweet = False
 
-        if not link:
-            continue
+        if re.search(
+            r'Reposted by|Retweeted by|reposted',
+            article,
+            flags=re.IGNORECASE
+        ):
+            is_retweet = True
+
+        # ----------------------------------------------------
+        # Save
+        # ----------------------------------------------------
 
         posts.append({
-            "id": post_id,
-            "title": title,
-            "link": link,
-            "description": description
+            "id": tweet_id,
+            "url": url,
+            "text": text,
+            "published": published,
+            "is_reply": is_reply,
+            "is_retweet": is_retweet
         })
 
     return posts
 
 
 # ============================================================
-# GET POSTS
+# SORT POSTS
 # ============================================================
 
-def get_posts():
+def sort_posts(posts):
 
-    last_error = None
-
-    for source in RSS_SOURCES:
-
-        print("")
-        print("------------------------------------------")
-        print("Trying:")
-        print(source)
-        print("------------------------------------------")
+    def sort_key(post):
 
         try:
-
-            response = requests.get(
-                source,
-                headers=HEADERS,
-                timeout=30,
-                allow_redirects=True
-            )
-
-            print(
-                "HTTP status:",
-                response.status_code
-            )
-
-            if response.status_code != 200:
-
-                print(
-                    "Source unavailable."
+            return datetime.fromisoformat(
+                post["published"].replace(
+                    "Z",
+                    "+00:00"
                 )
-
-                continue
-
-            if not response.text.strip():
-
-                print(
-                    "Empty response."
-                )
-
-                continue
-
-            posts = parse_feed_lenient(
-                response.text
             )
 
-            if not posts:
+        except Exception:
 
-                print(
-                    "No posts could be extracted."
-                )
+            # Snowflake IDs generally increase with time.
+            return int(post["id"])
 
-                continue
+    return sorted(
+        posts,
+        key=sort_key
+    )
 
-            print("")
-            print(
-                f"SUCCESS: {len(posts)} "
-                f"post(s) extracted."
-            )
 
-            return posts
+# ============================================================
+# TELEGRAM
+# ============================================================
 
-        except Exception as e:
+def send_telegram(post):
 
-            last_error = e
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN is missing"
+        )
 
-            print(
-                "Source failed:",
-                e
-            )
+    if not TELEGRAM_CHAT_ID:
+        raise RuntimeError(
+            "TELEGRAM_CHAT_ID is missing"
+        )
 
-    raise RuntimeError(
-        "No usable X feed source is available. "
-        f"Last error: {last_error}"
+    text = post["text"]
+
+    if not text:
+        text = "New KAVIAN post"
+
+    message = (
+        "🟣 KAVIAN\n\n"
+        f"{text}\n\n"
+        f"🔗 {post['url']}"
+    )
+
+    telegram_url = (
+        f"https://api.telegram.org/"
+        f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    )
+
+    response = requests.post(
+        telegram_url,
+        json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "disable_web_page_preview": False
+        },
+        timeout=30
+    )
+
+    if response.status_code != 200:
+
+        raise RuntimeError(
+            "Telegram error: "
+            f"{response.status_code} "
+            f"{response.text}"
+        )
+
+    print(
+        "Telegram sent:",
+        post["id"]
     )
 
 
@@ -416,51 +341,24 @@ def main():
 
     print("")
     print("==========================================")
-    print("KAVIAN X -> TELEGRAM FORWARDER")
+    print("KAVIAN X → TELEGRAM")
     print("==========================================")
     print("")
     print(
-        f"Checking @{USERNAME}..."
+        f"Monitoring @{USERNAME}"
     )
-    print("")
-
-    # --------------------------------------------------------
-    # Check secrets
-    # --------------------------------------------------------
-
-    if not TELEGRAM_BOT_TOKEN:
-
-        raise RuntimeError(
-            "Missing GitHub secret "
-            "TELEGRAM_BOT_TOKEN"
-        )
-
-    if not TELEGRAM_CHAT_ID:
-
-        raise RuntimeError(
-            "Missing GitHub secret "
-            "TELEGRAM_CHAT_ID"
-        )
-
-    # --------------------------------------------------------
-    # Load state
-    # --------------------------------------------------------
 
     state = load_state()
 
-    # --------------------------------------------------------
-    # Get X posts
-    # --------------------------------------------------------
+    page = download_profile()
 
-    posts = get_posts()
+    posts = extract_posts(page)
 
     if not posts:
 
-        print(
-            "No posts found."
+        raise RuntimeError(
+            "No tweet articles found."
         )
-
-        return
 
     # --------------------------------------------------------
     # Remove duplicates
@@ -469,7 +367,6 @@ def main():
     unique = {}
 
     for post in posts:
-
         unique[post["id"]] = post
 
     posts = list(
@@ -477,187 +374,153 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Newest first
+    # Sort oldest → newest
     # --------------------------------------------------------
 
+    posts = sort_posts(posts)
+
     print("")
     print(
-        f"Total unique posts: {len(posts)}"
+        "Unique posts:",
+        len(posts)
     )
+
+    for post in posts:
+
+        print(
+            post["id"],
+            post["published"],
+            post["url"]
+        )
 
     newest = posts[-1]
-
-    print("")
-    print("Newest post:")
-    print(
-        newest["link"]
-    )
 
     # --------------------------------------------------------
     # FIRST RUN
     #
-    # Existing newest post becomes baseline.
-    # Nothing gets sent.
+    # Don't send existing posts.
+    # Save newest as baseline.
     # --------------------------------------------------------
 
-    if not state.get(
-        "initialized",
-        False
-    ):
+    if not state.get("initialized"):
 
-        state["initialized"] = True
-
-        state["last_id"] = (
-            newest["id"]
-        )
-
-        state["last_link"] = (
-            newest["link"]
-        )
+        state = {
+            "initialized": True,
+            "last_id": newest["id"]
+        }
 
         save_state(state)
 
         print("")
+        print("FIRST RUN")
         print(
-            "FIRST RUN."
+            "Baseline saved:",
+            newest["id"]
         )
 
         print(
-            "Existing post saved "
-            "as baseline."
-        )
-
-        print(
-            "Nothing sent to Telegram."
-        )
-
-        print(
-            "Waiting for the next "
-            "new KAVIAN post."
+            "No Telegram message sent."
         )
 
         return
-
-    # --------------------------------------------------------
-    # Find last known post
-    # --------------------------------------------------------
 
     last_id = state.get(
         "last_id"
     )
 
-    found_last = False
+    # --------------------------------------------------------
+    # Find last known post
+    # --------------------------------------------------------
 
-    new_posts = []
+    last_index = None
 
-    for post in posts:
+    for index, post in enumerate(posts):
 
         if post["id"] == last_id:
 
-            found_last = True
+            last_index = index
 
-            continue
-
-        if found_last:
-
-            new_posts.append(
-                post
-            )
+            break
 
     # --------------------------------------------------------
-    # Safety:
-    # If old post disappeared from feed,
-    # DON'T send the whole feed.
+    # Safety mode
+    #
+    # If X no longer shows the old post,
+    # don't send everything.
     # --------------------------------------------------------
 
-    if not found_last:
+    if last_index is None:
 
         print("")
         print(
-            "Previous post is no longer "
-            "visible in the feed."
+            "Previous post not found "
+            "in current X page."
         )
 
         print(
-            "Safety mode:"
+            "SAFETY MODE:"
             " updating baseline only."
         )
 
-        state["last_id"] = (
-            newest["id"]
-        )
-
-        state["last_link"] = (
-            newest["link"]
-        )
+        state["last_id"] = newest["id"]
 
         save_state(state)
 
         return
 
     # --------------------------------------------------------
-    # Nothing new
+    # New posts
     # --------------------------------------------------------
+
+    new_posts = posts[
+        last_index + 1:
+    ]
+
+    # --------------------------------------------------------
+    # Filter replies and retweets
+    # --------------------------------------------------------
+
+    new_posts = [
+        post
+        for post in new_posts
+        if not post["is_reply"]
+        and not post["is_retweet"]
+    ]
 
     if not new_posts:
 
         print("")
         print(
-            "No new KAVIAN posts."
+            "No new original KAVIAN posts."
         )
 
         return
 
-    # --------------------------------------------------------
-    # Send new posts
-    # --------------------------------------------------------
-
     print("")
     print(
-        f"NEW POSTS FOUND: "
-        f"{len(new_posts)}"
+        "NEW ORIGINAL POSTS:",
+        len(new_posts)
     )
+
+    # --------------------------------------------------------
+    # Send oldest → newest
+    # --------------------------------------------------------
 
     for post in new_posts:
 
-        title = post["title"]
-
-        if not title:
-
-            title = "New KAVIAN post"
-
-        message = (
-            "🟣 KAVIAN\n\n"
-            f"{title}\n\n"
-            f"🔗 {post['link']}"
-        )
-
         print("")
         print(
-            "Sending to Telegram:"
+            "Sending:",
+            post["url"]
         )
 
-        print(
-            post["link"]
-        )
-
-        send_to_telegram(
-            message
-        )
-
-        time.sleep(2)
+        send_telegram(post)
 
     # --------------------------------------------------------
-    # Save newest successfully sent post
+    # Save newest post
     # --------------------------------------------------------
 
-    state["last_id"] = (
-        new_posts[-1]["id"]
-    )
-
-    state["last_link"] = (
-        new_posts[-1]["link"]
-    )
+    state["last_id"] = new_posts[-1]["id"]
 
     save_state(state)
 
@@ -666,14 +529,10 @@ def main():
     print("SUCCESS")
     print("==========================================")
     print(
-        f"Sent {len(new_posts)} "
-        f"new post(s)."
+        "Forwarded:",
+        len(new_posts)
     )
 
-
-# ============================================================
-# START
-# ============================================================
 
 if __name__ == "__main__":
     main()
