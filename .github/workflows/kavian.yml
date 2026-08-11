@@ -1,48 +1,28 @@
-name: KAVIAN X Forwarder
+name: Test Direct X Access
 
 on:
   workflow_dispatch:
 
-  schedule:
-    - cron: "*/10 * * * *"
-
 jobs:
-  forward:
+  test:
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-
     steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
+      - name: Test X public profile
         run: |
-          python -m pip install --upgrade pip
-          pip install requests
+          echo "Testing direct access to @KavianCoin..."
+          echo ""
 
-      - name: Run KAVIAN forwarder
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python forward.py
+          curl -L \
+            --max-time 30 \
+            -A "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1" \
+            -o kavian.html \
+            -w "HTTP STATUS: %{http_code}\n" \
+            "https://x.com/KavianCoin"
 
-      - name: Save KAVIAN state
-        if: success()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add kavian_state.json
-
-          git diff --cached --quiet || git commit -m "Update KAVIAN feed state"
-
-          git push
+          echo ""
+          echo "========== X RESPONSE =========="
+          wc -c kavian.html
+          head -c 2000 kavian.html
+          echo ""
+          echo "========== END =========="
