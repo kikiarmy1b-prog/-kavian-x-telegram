@@ -1,39 +1,22 @@
-name: Kavian X Forwarder
+name: Test X Feed
 
 on:
   workflow_dispatch:
 
-  schedule:
-    - cron: "*/5 * * * *"
-
-permissions:
-  contents: write
-
 jobs:
-  forward:
-    name: Run Kavian forwarder
+  test:
     runs-on: ubuntu-latest
 
     steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
+      - name: Test x2rss connection
         run: |
-          python -m pip install --upgrade pip
-          pip install feedparser requests
+          echo "Testing x2rss..."
+          curl -L --max-time 30 -A "Mozilla/5.0" \
+            -o feed.xml \
+            -w "HTTP STATUS: %{http_code}\n" \
+            "https://rss.gurify.com/KavianCoin/rss"
 
-      - name: Run Kavian forwarder
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python forward.py
+          echo "----- RESPONSE -----"
+          head -c 2000 feed.xml
+          echo
+          echo "----- END -----"
